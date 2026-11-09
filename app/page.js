@@ -19,6 +19,9 @@ import {
 const MapView = dynamic(() => import('../components/MapView'), { ssr: false });
 
 const PARAMS_INICIALES = {
+  destinoLat: null,
+  destinoLng: null,
+  destinoTexto: '',
   marca: '',
   modelo: '',
   anio: '',
@@ -57,15 +60,13 @@ export default function Home() {
   const [modal, setModal] = useState(null);
   const [aviso, setAviso] = useState('');
   const geoPedida = useRef(false);
-  const origenManual = useRef(false); // true cuando el usuario eligió el origen a mano
-  const origenSeq = useRef(0); // identifica la última elección de origen
+  const origenManual = useRef(false);
+  const origenSeq = useRef(0);
 
-  // Persistencia local de parámetros (no hay cuentas ni base de datos)
   useEffect(() => {
     try {
       const guardado = JSON.parse(localStorage.getItem('benciruta-params') || 'null');
       if (guardado) {
-        // REQ-EP1-04: si el combustible guardado no es válido, forzar 95 y avisar
         if (!COMBUSTIBLES.some((c) => c.id === guardado.combustible)) {
           guardado.combustible = DEFAULTS.combustible;
           setAviso('Se ha seleccionado 95 Octanos por defecto');
@@ -102,7 +103,6 @@ export default function Home() {
     setVista('parametros');
   }, []);
 
-  // REQ-EP1-02: fija el origen validando la cobertura (RN-01)
   const elegirOrigen = useCallback(
     async (lat, lng, texto, desdeGps = false) => {
       if (!dentroDeCobertura(lat, lng)) {
@@ -117,14 +117,12 @@ export default function Home() {
       setDireccion(texto || 'Ubicación seleccionada en el mapa');
       if (!texto) {
         const d = await direccionDesdeCoordenadas(lat, lng);
-        // si mientras tanto se eligió otro origen, esta dirección ya no corresponde
         if (d && seq === origenSeq.current) setDireccion(d);
       }
     },
     [limpiarResultados]
   );
 
-  // REQ-EP1-01: geolocalización con timeout de 5 s
   const usarMiUbicacion = useCallback((explicito = false) => {
     const fallar = () => {
       if (!explicito && origenManual.current) return;
@@ -160,7 +158,6 @@ export default function Home() {
         if (respondido) return;
         respondido = true;
         clearTimeout(corte);
-        // una respuesta tardía del GPS no debe pisar una dirección elegida a mano
         if (!explicito && origenManual.current) return;
         elegirOrigen(pos.coords.latitude, pos.coords.longitude, undefined, true);
       },
@@ -180,7 +177,6 @@ export default function Home() {
     usarMiUbicacion(false);
   }, [usarMiUbicacion]);
 
-  // REQ-EP2-01, EP3-01: búsqueda y recomendación
   const buscar = useCallback(
     async (radioOverride) => {
       if (!origen) return;
@@ -227,7 +223,6 @@ export default function Home() {
           return;
         }
 
-        // RN-02: monto en pesos -> litros con el precio promedio de las candidatas
         const promedio = enCobertura.reduce((s, e) => s + e.precioLitro, 0) / enCobertura.length;
         let litros = DEFAULTS.litros;
         let litrosDesdeDinero = false;
@@ -243,17 +238,19 @@ export default function Home() {
         const calculo = await calcularMejorOpcion({
           lat: origen.lat,
           lng: origen.lng,
+          destinoLat: params.destinoLat || null,
+          destinoLng: params.destinoLng || null,
           litrosACargar: litros,
           rendimientoKmL: Number(params.rendimiento),
           radioMaxKm: radioKm,
           tipoCombustible: comb.apiId,
         });
-        // /calcular no devuelve coordenadas ni marca: se completan desde /estaciones-cercanas por id
-        const porId = new Map(enCobertura.map((e) => [e.id, e]));
+
+        const porId = new Map(enCobertura.map((e) => [String(e.id), e]));
         const ranking = (calculo.ranking || [])
-          .filter((e) => porId.has(e.id))
+          .filter((e) => porId.has(String(e.id)))
           .map((e) => {
-            const { lat, lng, marca, comuna } = porId.get(e.id);
+            const { lat, lng, marca, comuna } = porId.get(String(e.id));
             return { ...e, lat, lng, marca, comuna };
           });
 
@@ -266,9 +263,11 @@ export default function Home() {
           return;
         }
 
-        // El ahorro se recalcula sobre las estaciones que quedaron dentro de la comuna
         const masCercana = [...ranking].sort((a, b) => a.distanciaKm - b.distanciaKm)[0];
-        const conAhorro = ranking.map((e) => ({ ...e, ahorroVsMasCercana: masCercana.costoTotal - e.costoTotal }));
+        const conAhorro = ranking.map((e) => ({
+          ...e,
+          ahorroVsMasCercana: masCercana.costoTotal - e.costoTotal,
+        }));
 
         setRuta(null);
         setRutaDeId(null);
@@ -280,6 +279,7 @@ export default function Home() {
           litrosDesdeDinero,
           combustibleLabel: comb.label,
           radioKm,
+          tieneDestino: Boolean(params.destinoLat),
         });
         setVista('resultados');
         setEstadoSheet('medio');
@@ -299,7 +299,7 @@ export default function Home() {
     [origen, params]
   );
 
-  // REQ-EP3-03: ruta hacia la estación elegida
+  // Traza la ruta pasando por la bencinera y continuando hacia el destino si fue definido
   const verRuta = useCallback(
     async (estacion) => {
       if (!origen) return;
@@ -307,10 +307,19 @@ export default function Home() {
       setCargandoRuta(estacion.id);
       setSeleccionadaId(estacion.id);
       try {
-        const r = await obtenerRuta(origen, { lat: estacion.lat, lng: estacion.lng });
+        const destinoObj =
+          params.destinoLat && params.destinoLng
+            ? { lat: params.destinoLat, lng: params.destinoLng }
+            : null;
+
+        const r = await obtenerRuta(
+          origen,
+          { lat: estacion.lat, lng: estacion.lng },
+          destinoObj
+        );
         setRuta(r);
         setRutaDeId(estacion.id);
-        setEstadoSheet('minimizado'); // baja el panel para dejar ver la ruta en el mapa
+        setEstadoSheet('minimizado');
       } catch {
         setRutaDeId(estacion.id);
         setErrorRuta('No fue posible mostrar la ruta seleccionada. Intenta nuevamente.');
@@ -318,16 +327,22 @@ export default function Home() {
         setCargandoRuta(null);
       }
     },
-    [origen]
+    [origen, params.destinoLat, params.destinoLng]
   );
+
+  const destinoActual =
+    params.destinoLat && params.destinoLng
+      ? { lat: params.destinoLat, lng: params.destinoLng }
+      : null;
 
   return (
     <main className="relative h-dvh w-full overflow-hidden">
       <MapView
         origen={origen}
+        destino={destinoActual}
         radioKm={params.radioKm}
         estaciones={resultado?.ranking}
-        recomendadaId={resultado?.mejorOpcion.id}
+        recomendadaId={resultado?.mejorOpcion?.id}
         seleccionadaId={seleccionadaId}
         ruta={ruta}
         bottomInset={alturaSheet}
@@ -335,7 +350,6 @@ export default function Home() {
         onSeleccionarEstacion={setSeleccionadaId}
       />
 
-      {/* Barra superior de búsqueda */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-30 p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <SearchBar
           direccion={direccion}
@@ -346,7 +360,6 @@ export default function Home() {
         />
       </div>
 
-      {/* Botón flotante: usar mi ubicación actual */}
       <button
         type="button"
         onClick={() => usarMiUbicacion(true)}

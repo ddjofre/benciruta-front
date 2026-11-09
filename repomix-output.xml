@@ -1,0 +1,1785 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+app/
+  globals.css
+  layout.js
+  page.js
+components/
+  BottomSheet.js
+  MapView.js
+  Modal.js
+  ParamsPanel.js
+  Resultados.js
+  SearchBar.js
+lib/
+  api.js
+  config.js
+  format.js
+  vehiculos.js
+.env.local.example
+.gitignore
+package.json
+postcss.config.mjs
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/globals.css">
+@import "tailwindcss";
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-attrib {
+  opacity: 0.8;
+}
+</file>
+
+<file path="app/layout.js">
+import './globals.css';
+
+export const metadata = {
+  title: 'BenciRuta',
+  description: 'Encuentra la bencinera que más te conviene en Ñuñoa',
+};
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: 'cover',
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="es">
+      <body>{children}</body>
+    </html>
+  );
+}
+</file>
+
+<file path="app/page.js">
+'use client';
+
+import dynamic from 'next/dynamic';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import SearchBar from '../components/SearchBar';
+import BottomSheet from '../components/BottomSheet';
+import ParamsPanel from '../components/ParamsPanel';
+import Resultados from '../components/Resultados';
+import Modal from '../components/Modal';
+import { COMBUSTIBLES, DEFAULTS, dentroDeCobertura } from '../lib/config';
+import { parseMiles } from '../lib/format';
+import {
+  calcularMejorOpcion,
+  direccionDesdeCoordenadas,
+  obtenerEstacionesCercanas,
+  obtenerRuta,
+} from '../lib/api';
+
+const MapView = dynamic(() => import('../components/MapView'), { ssr: false });
+
+const PARAMS_INICIALES = {
+  marca: '',
+  modelo: '',
+  anio: '',
+  rendimiento: String(DEFAULTS.rendimientoKmL),
+  combustible: DEFAULTS.combustible,
+  modo: 'dinero',
+  cantidad: '',
+  radioKm: DEFAULTS.radioKm,
+};
+
+const MSG_FUERA_COBERTURA =
+  'Dirección no encontrada dentro del área de cobertura. Por favor, intenta con otra referencia o selecciona directamente en el mapa';
+
+export default function Home() {
+  const [origen, setOrigen] = useState(null);
+  const [direccion, setDireccion] = useState('');
+  const [errorDireccion, setErrorDireccion] = useState('');
+  const [enfocarBuscador, setEnfocarBuscador] = useState(0);
+
+  const [params, setParams] = useState(PARAMS_INICIALES);
+  const [cargado, setCargado] = useState(false);
+
+  const [estadoSheet, setEstadoSheet] = useState('medio');
+  const [alturaSheet, setAlturaSheet] = useState(0);
+  const [vista, setVista] = useState('parametros');
+
+  const [buscando, setBuscando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [seleccionadaId, setSeleccionadaId] = useState(null);
+
+  const [ruta, setRuta] = useState(null);
+  const [rutaDeId, setRutaDeId] = useState(null);
+  const [cargandoRuta, setCargandoRuta] = useState(null);
+  const [errorRuta, setErrorRuta] = useState('');
+
+  const [modal, setModal] = useState(null);
+  const [aviso, setAviso] = useState('');
+  const geoPedida = useRef(false);
+  const origenManual = useRef(false); // true cuando el usuario eligió el origen a mano
+  const origenSeq = useRef(0); // identifica la última elección de origen
+
+  // Persistencia local de parámetros (no hay cuentas ni base de datos)
+  useEffect(() => {
+    try {
+      const guardado = JSON.parse(localStorage.getItem('benciruta-params') || 'null');
+      if (guardado) {
+        // REQ-EP1-04: si el combustible guardado no es válido, forzar 95 y avisar
+        if (!COMBUSTIBLES.some((c) => c.id === guardado.combustible)) {
+          guardado.combustible = DEFAULTS.combustible;
+          setAviso('Se ha seleccionado 95 Octanos por defecto');
+        }
+        setParams({ ...PARAMS_INICIALES, ...guardado });
+      }
+    } catch {
+      /* almacenamiento no disponible */
+    }
+    setCargado(true);
+  }, []);
+
+  useEffect(() => {
+    if (!cargado) return;
+    try {
+      localStorage.setItem('benciruta-params', JSON.stringify(params));
+    } catch {
+      /* ignorar */
+    }
+  }, [params, cargado]);
+
+  useEffect(() => {
+    if (!aviso) return;
+    const t = setTimeout(() => setAviso(''), 3500);
+    return () => clearTimeout(t);
+  }, [aviso]);
+
+  const limpiarResultados = useCallback(() => {
+    setResultado(null);
+    setRuta(null);
+    setRutaDeId(null);
+    setSeleccionadaId(null);
+    setErrorRuta('');
+    setVista('parametros');
+  }, []);
+
+  // REQ-EP1-02: fija el origen validando la cobertura (RN-01)
+  const elegirOrigen = useCallback(
+    async (lat, lng, texto, desdeGps = false) => {
+      if (!dentroDeCobertura(lat, lng)) {
+        setErrorDireccion(MSG_FUERA_COBERTURA);
+        return;
+      }
+      origenManual.current = !desdeGps;
+      const seq = ++origenSeq.current;
+      setErrorDireccion('');
+      setOrigen({ lat, lng });
+      limpiarResultados();
+      setDireccion(texto || 'Ubicación seleccionada en el mapa');
+      if (!texto) {
+        const d = await direccionDesdeCoordenadas(lat, lng);
+        // si mientras tanto se eligió otro origen, esta dirección ya no corresponde
+        if (d && seq === origenSeq.current) setDireccion(d);
+      }
+    },
+    [limpiarResultados]
+  );
+
+  // REQ-EP1-01: geolocalización con timeout de 5 s
+  const usarMiUbicacion = useCallback((explicito = false) => {
+    const fallar = () => {
+      if (!explicito && origenManual.current) return;
+      setModal({
+        titulo: 'No pudimos acceder a tu ubicación',
+        mensaje:
+          'No se pudo acceder a tu ubicación actual. Por favor, selecciona un punto en el mapa o ingresa una dirección manualmente',
+        acciones: [
+          {
+            label: 'Ingresar dirección',
+            primario: true,
+            onClick: () => {
+              setModal(null);
+              setEnfocarBuscador((n) => n + 1);
+            },
+          },
+          { label: 'Elegir en el mapa', onClick: () => setModal(null) },
+        ],
+      });
+    };
+    if (!navigator.geolocation) return fallar();
+
+    let respondido = false;
+    const corte = setTimeout(() => {
+      if (!respondido) {
+        respondido = true;
+        fallar();
+      }
+    }, 5000);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (respondido) return;
+        respondido = true;
+        clearTimeout(corte);
+        // una respuesta tardía del GPS no debe pisar una dirección elegida a mano
+        if (!explicito && origenManual.current) return;
+        elegirOrigen(pos.coords.latitude, pos.coords.longitude, undefined, true);
+      },
+      () => {
+        if (respondido) return;
+        respondido = true;
+        clearTimeout(corte);
+        fallar();
+      },
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 }
+    );
+  }, [elegirOrigen]);
+
+  useEffect(() => {
+    if (geoPedida.current) return;
+    geoPedida.current = true;
+    usarMiUbicacion(false);
+  }, [usarMiUbicacion]);
+
+  // REQ-EP2-01, EP3-01: búsqueda y recomendación
+  const buscar = useCallback(
+    async (radioOverride) => {
+      if (!origen) return;
+      const radioKm = radioOverride ?? params.radioKm;
+      const comb = COMBUSTIBLES.find((c) => c.id === params.combustible) || COMBUSTIBLES[1];
+      setBuscando(true);
+      setErrorRuta('');
+      setModal(null);
+
+      const reintentar = () => buscar(radioOverride);
+      try {
+        const cercanas = await obtenerEstacionesCercanas({
+          lat: origen.lat,
+          lng: origen.lng,
+          radioKm,
+          tipoCombustible: comb.apiId,
+        });
+        const enCobertura = (cercanas.estaciones || []).filter((e) => dentroDeCobertura(e.lat, e.lng));
+
+        if (enCobertura.length === 0) {
+          const ampliado = Math.min(20, radioKm + 5);
+          setModal({
+            titulo: 'Sin estaciones disponibles',
+            mensaje:
+              ampliado > radioKm
+                ? `No se encontraron estaciones en un radio de ${radioKm} km. ¿Deseas ampliar la búsqueda a ${ampliado} km?`
+                : 'No se encontraron estaciones disponibles dentro del radio seleccionado',
+            acciones: [
+              ...(ampliado > radioKm
+                ? [
+                    {
+                      label: `Ampliar a ${ampliado} km`,
+                      primario: true,
+                      onClick: () => {
+                        setParams((p) => ({ ...p, radioKm: ampliado }));
+                        buscar(ampliado);
+                      },
+                    },
+                  ]
+                : []),
+              { label: 'Cerrar', onClick: () => setModal(null) },
+            ],
+          });
+          return;
+        }
+
+        // RN-02: monto en pesos -> litros con el precio promedio de las candidatas
+        const promedio = enCobertura.reduce((s, e) => s + e.precioLitro, 0) / enCobertura.length;
+        let litros = DEFAULTS.litros;
+        let litrosDesdeDinero = false;
+        if (params.cantidad) {
+          if (params.modo === 'dinero') {
+            litros = parseMiles(params.cantidad) / promedio;
+            litrosDesdeDinero = true;
+          } else {
+            litros = Number(String(params.cantidad).replace(',', '.'));
+          }
+        }
+
+        const calculo = await calcularMejorOpcion({
+          lat: origen.lat,
+          lng: origen.lng,
+          litrosACargar: litros,
+          rendimientoKmL: Number(params.rendimiento),
+          radioMaxKm: radioKm,
+          tipoCombustible: comb.apiId,
+        });
+        // /calcular no devuelve coordenadas ni marca: se completan desde /estaciones-cercanas por id
+        const porId = new Map(enCobertura.map((e) => [e.id, e]));
+        const ranking = (calculo.ranking || [])
+          .filter((e) => porId.has(e.id))
+          .map((e) => {
+            const { lat, lng, marca, comuna } = porId.get(e.id);
+            return { ...e, lat, lng, marca, comuna };
+          });
+
+        if (ranking.length === 0) {
+          setModal({
+            titulo: 'Sin alternativas',
+            mensaje: 'No se encontró ninguna alternativa disponible en este momento.',
+            acciones: [{ label: 'Cerrar', onClick: () => setModal(null) }],
+          });
+          return;
+        }
+
+        // El ahorro se recalcula sobre las estaciones que quedaron dentro de la comuna
+        const masCercana = [...ranking].sort((a, b) => a.distanciaKm - b.distanciaKm)[0];
+        const conAhorro = ranking.map((e) => ({ ...e, ahorroVsMasCercana: masCercana.costoTotal - e.costoTotal }));
+
+        setRuta(null);
+        setRutaDeId(null);
+        setSeleccionadaId(null);
+        setResultado({
+          ranking: conAhorro,
+          mejorOpcion: conAhorro[0],
+          litros,
+          litrosDesdeDinero,
+          combustibleLabel: comb.label,
+          radioKm,
+        });
+        setVista('resultados');
+        setEstadoSheet('medio');
+      } catch {
+        setModal({
+          titulo: 'No fue posible obtener los datos',
+          mensaje: 'No fue posible obtener los datos necesarios de estaciones y precios. Puedes reintentar la consulta.',
+          acciones: [
+            { label: 'Reintentar', primario: true, onClick: reintentar },
+            { label: 'Cerrar', onClick: () => setModal(null) },
+          ],
+        });
+      } finally {
+        setBuscando(false);
+      }
+    },
+    [origen, params]
+  );
+
+  // REQ-EP3-03: ruta hacia la estación elegida
+  const verRuta = useCallback(
+    async (estacion) => {
+      if (!origen) return;
+      setErrorRuta('');
+      setCargandoRuta(estacion.id);
+      setSeleccionadaId(estacion.id);
+      try {
+        const r = await obtenerRuta(origen, { lat: estacion.lat, lng: estacion.lng });
+        setRuta(r);
+        setRutaDeId(estacion.id);
+        setEstadoSheet('minimizado'); // baja el panel para dejar ver la ruta en el mapa
+      } catch {
+        setRutaDeId(estacion.id);
+        setErrorRuta('No fue posible mostrar la ruta seleccionada. Intenta nuevamente.');
+      } finally {
+        setCargandoRuta(null);
+      }
+    },
+    [origen]
+  );
+
+  return (
+    <main className="relative h-dvh w-full overflow-hidden">
+      <MapView
+        origen={origen}
+        radioKm={params.radioKm}
+        estaciones={resultado?.ranking}
+        recomendadaId={resultado?.mejorOpcion.id}
+        seleccionadaId={seleccionadaId}
+        ruta={ruta}
+        bottomInset={alturaSheet}
+        onElegirOrigen={elegirOrigen}
+        onSeleccionarEstacion={setSeleccionadaId}
+      />
+
+      {/* Barra superior de búsqueda */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-30 p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <SearchBar
+          direccion={direccion}
+          errorDireccion={errorDireccion}
+          onElegir={elegirOrigen}
+          onErrorUbicacion={() => setErrorDireccion(MSG_FUERA_COBERTURA)}
+          autoFocus={enfocarBuscador}
+        />
+      </div>
+
+      {/* Botón flotante: usar mi ubicación actual */}
+      <button
+        type="button"
+        onClick={() => usarMiUbicacion(true)}
+        aria-label="Usar mi ubicación actual"
+        title="Usar mi ubicación actual"
+        className="absolute right-3 z-30 flex h-12 w-12 items-center justify-center rounded-full bg-white text-xl text-blue-600 shadow-lg ring-1 ring-slate-200"
+        style={{ bottom: alturaSheet + 16 }}
+      >
+        ◎
+      </button>
+
+      {aviso && (
+        <div role="status" className="absolute inset-x-0 top-24 z-30 mx-auto w-fit max-w-[90%] rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
+          {aviso}
+        </div>
+      )}
+
+      <BottomSheet estado={estadoSheet} onEstado={setEstadoSheet} onAltura={setAlturaSheet}>
+        {vista === 'resultados' && resultado ? (
+          <Resultados
+            resultado={resultado}
+            seleccionadaId={seleccionadaId}
+            rutaDeId={rutaDeId}
+            errorRuta={errorRuta}
+            cargandoRuta={cargandoRuta}
+            onSeleccionar={setSeleccionadaId}
+            onVerRuta={verRuta}
+            onModificar={() => {
+              setVista('parametros');
+              setEstadoSheet('expandido');
+            }}
+          />
+        ) : (
+          <>
+            {resultado && (
+              <button
+                type="button"
+                onClick={() => {
+                  setVista('resultados');
+                  setEstadoSheet('medio');
+                }}
+                className="mb-3 h-10 w-full rounded-xl bg-slate-100 text-sm font-semibold text-slate-700"
+              >
+                ← Volver a resultados
+              </button>
+            )}
+            <ParamsPanel
+              params={params}
+              onCambio={setParams}
+              onBuscar={() => buscar()}
+              buscando={buscando}
+              origenListo={Boolean(origen)}
+            />
+          </>
+        )}
+      </BottomSheet>
+
+      {modal && <Modal {...modal} onCerrar={() => setModal(null)} />}
+    </main>
+  );
+}
+</file>
+
+<file path="components/BottomSheet.js">
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+
+// Panel inferior con 3 estados: minimizado, medio y expandido (10.1)
+const ESTADOS = ['minimizado', 'medio', 'expandido'];
+const ALTURA_MIN = 76;
+
+export default function BottomSheet({ estado, onEstado, onAltura, children }) {
+  const [alto, setAlto] = useState(0);
+  const [arrastre, setArrastre] = useState(null);
+  const inicio = useRef(null);
+
+  useEffect(() => {
+    const calc = () => setAlto(window.innerHeight);
+    calc();
+    window.addEventListener('resize', calc);
+    return () => window.removeEventListener('resize', calc);
+  }, []);
+
+  const alturas = {
+    minimizado: ALTURA_MIN,
+    medio: Math.round(alto * 0.45),
+    expandido: Math.round(alto * 0.88),
+  };
+  const actual = arrastre ?? alturas[estado];
+
+  useEffect(() => {
+    if (alto) onAltura?.(alturas[estado]);
+  }, [estado, alto]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function bajar(e) {
+    inicio.current = { y: e.clientY, h: alturas[estado], movido: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function mover(e) {
+    if (!inicio.current) return;
+    const dy = inicio.current.y - e.clientY;
+    if (Math.abs(dy) > 4) inicio.current.movido = true;
+    setArrastre(Math.max(ALTURA_MIN, Math.min(alturas.expandido, inicio.current.h + dy)));
+  }
+  function soltar() {
+    if (!inicio.current) return;
+    const { movido } = inicio.current;
+    if (movido && arrastre !== null) {
+      // snap al estado más cercano
+      const masCercano = ESTADOS.reduce((a, b) => (Math.abs(alturas[b] - arrastre) < Math.abs(alturas[a] - arrastre) ? b : a));
+      onEstado(masCercano);
+    } else {
+      // tap en el asa: cicla minimizado -> medio -> expandido -> medio
+      onEstado(estado === 'medio' ? 'expandido' : 'medio');
+    }
+    inicio.current = null;
+    setArrastre(null);
+  }
+
+  return (
+    <section
+      className="absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-3xl bg-white shadow-[0_-8px_30px_rgba(0,0,0,.18)]"
+      style={{
+        height: actual || ALTURA_MIN,
+        transition: arrastre === null ? 'height 220ms ease' : 'none',
+      }}
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Ajustar tamaño del panel"
+        onPointerDown={bajar}
+        onPointerMove={mover}
+        onPointerUp={soltar}
+        onPointerCancel={soltar}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') onEstado(estado === 'medio' ? 'expandido' : 'medio');
+        }}
+        className="flex shrink-0 cursor-grab touch-none justify-center py-3 active:cursor-grabbing"
+      >
+        <span className="h-1.5 w-12 rounded-full bg-slate-300" />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {children}
+      </div>
+    </section>
+  );
+}
+</file>
+
+<file path="components/MapView.js">
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import { MAPBOX_TOKEN, NUNOA_CENTER } from '../lib/config';
+
+// Círculo geodésico aproximado como polígono GeoJSON (radio en km)
+function circulo(lat, lng, radioKm, pasos = 64) {
+  const coords = [];
+  const dLat = radioKm / 111.32;
+  const dLng = radioKm / (111.32 * Math.cos((lat * Math.PI) / 180));
+  for (let i = 0; i <= pasos; i++) {
+    const a = (i / pasos) * 2 * Math.PI;
+    coords.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [coords] } };
+}
+
+const VACIO = { type: 'FeatureCollection', features: [] };
+
+function crearPin(color, texto) {
+  const el = document.createElement('div');
+  el.style.cssText = `
+    width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+    background:${color};border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;`;
+  const t = document.createElement('span');
+  t.textContent = texto;
+  t.style.cssText = 'transform:rotate(45deg);color:#fff;font-weight:700;font-size:12px;';
+  el.appendChild(t);
+  return el;
+}
+
+export default function MapView({
+  origen,
+  radioKm,
+  estaciones,
+  recomendadaId,
+  seleccionadaId,
+  ruta,
+  bottomInset,
+  onElegirOrigen,
+  onSeleccionarEstacion,
+}) {
+  const contenedor = useRef(null);
+  const mapa = useRef(null);
+  const listo = useRef(false);
+  const marcadorOrigen = useRef(null);
+  const marcadoresEstaciones = useRef([]);
+  const cbOrigen = useRef(onElegirOrigen);
+  const cbEstacion = useRef(onSeleccionarEstacion);
+  const [sinToken] = useState(!MAPBOX_TOKEN);
+
+  cbOrigen.current = onElegirOrigen;
+  cbEstacion.current = onSeleccionarEstacion;
+
+  // Inicialización única del mapa
+  useEffect(() => {
+    if (!MAPBOX_TOKEN || mapa.current) return;
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+
+    const m = new mapboxgl.Map({
+      container: contenedor.current,
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [NUNOA_CENTER.lng, NUNOA_CENTER.lat],
+      zoom: 13.5,
+      attributionControl: false,
+    });
+    m.addControl(new mapboxgl.AttributionControl({ compact: true }), 'top-right');
+
+    m.on('load', () => {
+      m.addSource('radio', { type: 'geojson', data: VACIO });
+      m.addLayer({
+        id: 'radio-relleno',
+        type: 'fill',
+        source: 'radio',
+        paint: { 'fill-color': '#2563eb', 'fill-opacity': 0.08 },
+      });
+      m.addLayer({
+        id: 'radio-borde',
+        type: 'line',
+        source: 'radio',
+        paint: { 'line-color': '#2563eb', 'line-width': 2 },
+      });
+      m.addSource('ruta', { type: 'geojson', data: VACIO });
+      m.addLayer({
+        id: 'ruta-borde',
+        type: 'line',
+        source: 'ruta',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#ffffff', 'line-width': 9 },
+      });
+      m.addLayer({
+        id: 'ruta-linea',
+        type: 'line',
+        source: 'ruta',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#16a34a', 'line-width': 5 },
+      });
+      listo.current = true;
+      m.fire('benci-listo');
+    });
+
+    // REQ-EP1-02: tap sobre el mapa fija el origen
+    m.on('click', (e) => cbOrigen.current?.(e.lngLat.lat, e.lngLat.lng));
+
+    mapa.current = m;
+    return () => {
+      // los marcadores pertenecen al mapa que se destruye: se descartan para recrearlos en el nuevo
+      marcadorOrigen.current?.remove();
+      marcadorOrigen.current = null;
+      marcadoresEstaciones.current.forEach((x) => x.remove());
+      marcadoresEstaciones.current = [];
+      m.remove();
+      mapa.current = null;
+      listo.current = false;
+    };
+  }, []);
+
+  // Marcador de origen (arrastrable) + círculo de radio
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m || !origen) return;
+
+    const aplicar = () => {
+      if (!marcadorOrigen.current) {
+        const el = document.createElement('div');
+        el.style.cssText =
+          'width:20px;height:20px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,.25);';
+        marcadorOrigen.current = new mapboxgl.Marker({ element: el, draggable: true })
+          .setLngLat([origen.lng, origen.lat])
+          .addTo(m);
+        marcadorOrigen.current.on('dragend', () => {
+          const p = marcadorOrigen.current.getLngLat();
+          cbOrigen.current?.(p.lat, p.lng);
+        });
+      } else {
+        marcadorOrigen.current.setLngLat([origen.lng, origen.lat]);
+      }
+      m.getSource('radio')?.setData(circulo(origen.lat, origen.lng, radioKm));
+    };
+
+    if (listo.current) aplicar();
+    else m.once('benci-listo', aplicar);
+  }, [origen, radioKm]);
+
+  // Recentrado suave cuando cambia el origen
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m || !origen) return;
+    m.easeTo({
+      center: [origen.lng, origen.lat],
+      duration: 800,
+      padding: { top: 90, bottom: bottomInset || 0, left: 0, right: 0 },
+    });
+  }, [origen?.lat, origen?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Marcadores de estaciones
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m) return;
+    marcadoresEstaciones.current.forEach((x) => x.remove());
+    marcadoresEstaciones.current = [];
+
+    (estaciones || []).forEach((e, i) => {
+      const esRec = e.id === recomendadaId;
+      const esSel = e.id === seleccionadaId;
+      const el = crearPin(esRec ? '#16a34a' : esSel ? '#f59e0b' : '#64748b', esRec ? '★' : String(i + 1));
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        cbEstacion.current?.(e.id);
+      });
+      const mk = new mapboxgl.Marker({ element: el, anchor: 'bottom' }).setLngLat([e.lng, e.lat]).addTo(m);
+      marcadoresEstaciones.current.push(mk);
+    });
+  }, [estaciones, recomendadaId, seleccionadaId]);
+
+  // Ruta hacia la estación elegida
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m) return;
+    const aplicar = () => {
+      m.getSource('ruta')?.setData(ruta ? { type: 'Feature', geometry: ruta.geometry } : VACIO);
+      if (ruta && origen) {
+        const b = new mapboxgl.LngLatBounds();
+        ruta.geometry.coordinates.forEach((c) => b.extend(c));
+        b.extend([origen.lng, origen.lat]); // el origen puede quedar fuera del trazo (se ajusta a la calle)
+        m.fitBounds(b, { padding: { top: 100, bottom: (bottomInset || 0) + 30, left: 40, right: 40 }, duration: 900 });
+      }
+    };
+    if (listo.current) aplicar();
+    else m.once('benci-listo', aplicar);
+  }, [ruta]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (sinToken) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center bg-slate-200 p-8 text-center">
+        <div className="max-w-sm rounded-xl bg-white p-5 shadow">
+          <p className="font-semibold">Falta el token de Mapbox</p>
+          <p className="mt-2 text-sm text-slate-600">
+            Crea el archivo <code>.env.local</code> en <code>benciruta-front</code> con{' '}
+            <code>NEXT_PUBLIC_MAPBOX_TOKEN=pk...</code> y reinicia <code>npm run dev</code>.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Mapbox fuerza position:relative en su contenedor, por eso va dentro de un envoltorio absoluto
+  return (
+    <div className="absolute inset-0">
+      <div ref={contenedor} className="h-full w-full" />
+    </div>
+  );
+}
+</file>
+
+<file path="components/Modal.js">
+'use client';
+
+// Alerta emergente reutilizable (sin ubicación, sin estaciones, errores de fuente)
+export default function Modal({ titulo, mensaje, acciones, onCerrar }) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/40 p-5" onClick={onCerrar}>
+      <div
+        role="alertdialog"
+        aria-labelledby="modal-titulo"
+        aria-describedby="modal-msg"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl"
+      >
+        <h2 id="modal-titulo" className="text-lg font-bold">
+          {titulo}
+        </h2>
+        <p id="modal-msg" className="mt-2 text-sm text-slate-600">
+          {mensaje}
+        </p>
+        <div className="mt-4 flex flex-col gap-2">
+          {acciones.map((a) => (
+            <button
+              key={a.label}
+              type="button"
+              onClick={a.onClick}
+              className={`h-12 rounded-xl font-semibold ${
+                a.primario ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-800'
+              }`}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="components/ParamsPanel.js">
+'use client';
+
+import { useState } from 'react';
+import { COMBUSTIBLES } from '../lib/config';
+import { VEHICULOS, rendimientoDe } from '../lib/vehiculos';
+import { formatMiles, parseMiles } from '../lib/format';
+
+export const MIN_DINERO = 1000;
+export const MIN_LITROS = 1;
+
+export function validarRendimiento(valor) {
+  const n = Number(String(valor).replace(',', '.'));
+  return !isNaN(n) && n >= 1 && n <= 50;
+}
+
+// Un valor vacío es válido: se asumen los 30 L por defecto
+export function validarCantidad(modo, cantidad) {
+  if (cantidad === '' || cantidad === undefined) return true;
+  const n = modo === 'dinero' ? parseMiles(cantidad) : Number(String(cantidad).replace(',', '.'));
+  if (isNaN(n)) return false;
+  return n >= (modo === 'dinero' ? MIN_DINERO : MIN_LITROS);
+}
+
+function Bloque({ titulo, resumen, abierto, onToggle, children }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={abierto}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <span className="font-semibold">{titulo}</span>
+        <span className="flex items-center gap-2 text-sm text-slate-500">
+          {!abierto && resumen}
+          <span aria-hidden>{abierto ? '▲' : '▼'}</span>
+        </span>
+      </button>
+      {abierto && <div className="space-y-3 px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
+const campo =
+  'h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 disabled:bg-slate-100 disabled:text-slate-400';
+
+export default function ParamsPanel({ params, onCambio, onBuscar, buscando, origenListo }) {
+  const [abiertos, setAbiertos] = useState({ vehiculo: true, combustible: true, volumen: true, radio: true });
+  const [rendBorrador, setRendBorrador] = useState(String(params.rendimiento));
+
+  const toggle = (k) => setAbiertos((a) => ({ ...a, [k]: !a[k] }));
+  const set = (cambios) => onCambio({ ...params, ...cambios });
+
+  const rendOk = validarRendimiento(rendBorrador);
+  const cantidadOk = validarCantidad(params.modo, params.cantidad);
+  const puedeBuscar = origenListo && validarRendimiento(params.rendimiento) && cantidadOk && !buscando;
+
+  const marcas = Object.keys(VEHICULOS);
+  const modelos = params.marca ? Object.keys(VEHICULOS[params.marca]) : [];
+  const anios = params.marca && params.modelo ? Object.keys(VEHICULOS[params.marca][params.modelo]) : [];
+
+  function elegirVehiculo(cambios) {
+    const nuevo = { ...params, ...cambios };
+    const r = rendimientoDe(nuevo.marca, nuevo.modelo, Number(nuevo.anio));
+    if (r) setRendBorrador(String(r).replace('.', ','));
+    onCambio({ ...nuevo, rendimiento: r ? String(r) : params.rendimiento });
+  }
+
+  const resumenVehiculo = `${String(params.rendimiento).replace('.', ',')} km/l`;
+  const resumenComb = COMBUSTIBLES.find((c) => c.id === params.combustible)?.label;
+  const resumenVol = params.cantidad
+    ? params.modo === 'dinero'
+      ? `$${params.cantidad}`
+      : `${params.cantidad} L`
+    : '30 L';
+
+  return (
+    <div className="space-y-3 pb-2">
+      <h2 className="text-lg font-bold">¿Dónde te conviene cargar?</h2>
+
+      {/* 1. Datos del vehículo */}
+      <Bloque titulo="Datos del vehículo" resumen={resumenVehiculo} abierto={abiertos.vehiculo} onToggle={() => toggle('vehiculo')}>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <select
+            aria-label="Marca"
+            className={campo}
+            value={params.marca}
+            onChange={(e) => elegirVehiculo({ marca: e.target.value, modelo: '', anio: '' })}
+          >
+            <option value="">Marca</option>
+            {marcas.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Modelo"
+            className={campo}
+            value={params.modelo}
+            disabled={!params.marca}
+            onChange={(e) => elegirVehiculo({ modelo: e.target.value, anio: '' })}
+          >
+            <option value="">Modelo</option>
+            {modelos.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Año"
+            className={campo}
+            value={params.anio}
+            disabled={!params.modelo}
+            onChange={(e) => elegirVehiculo({ anio: e.target.value })}
+          >
+            <option value="">Año</option>
+            {anios.map((a) => (
+              <option key={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="rend" className="mb-1 block text-sm font-medium">
+            Rendimiento promedio (km/l)
+          </label>
+          <input
+            id="rend"
+            inputMode="decimal"
+            value={rendBorrador}
+            onChange={(e) => setRendBorrador(e.target.value.replace(/[^\d.,]/g, ''))}
+            aria-invalid={!rendOk}
+            className={`${campo} ${rendOk ? '' : 'border-red-500 focus:border-red-500 focus:ring-red-200'}`}
+          />
+          {!rendOk && (
+            <p role="alert" className="mt-1 text-sm text-red-600">
+              Ingresa un rendimiento válido entre 1.0 y 50.0 km/l
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={!rendOk}
+          onClick={() => set({ rendimiento: rendBorrador.replace(',', '.') })}
+          className="h-11 w-full rounded-xl bg-slate-900 font-semibold text-white disabled:bg-slate-300"
+        >
+          Guardar/Aplicar
+        </button>
+      </Bloque>
+
+      {/* 2. Tipo de combustible */}
+      <Bloque titulo="Tipo de combustible" resumen={resumenComb} abierto={abiertos.combustible} onToggle={() => toggle('combustible')}>
+        <div role="radiogroup" aria-label="Tipo de combustible" className="flex gap-2 overflow-x-auto pb-1">
+          {COMBUSTIBLES.map((c) => {
+            const sel = params.combustible === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                role="radio"
+                aria-checked={sel}
+                onClick={() => set({ combustible: c.id })}
+                className={`h-11 shrink-0 rounded-full px-4 text-sm font-semibold ${
+                  sel ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-300'
+                }`}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </Bloque>
+
+      {/* 3. Volumen de carga */}
+      <Bloque titulo="Volumen de carga" resumen={resumenVol} abierto={abiertos.volumen} onToggle={() => toggle('volumen')}>
+        <div className="grid grid-cols-2 rounded-xl bg-slate-200 p-1" role="tablist" aria-label="Modo de ingreso">
+          {[
+            ['dinero', 'Monto en Dinero ($)'],
+            ['litros', 'Litros Totales (L)'],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={params.modo === id}
+              onClick={() => set({ modo: id, cantidad: '' })}
+              className={`h-9 rounded-lg text-sm font-semibold ${params.modo === id ? 'bg-white shadow' : 'text-slate-600'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          <label htmlFor="cant" className="mb-1 block text-sm font-medium">
+            {params.modo === 'dinero' ? 'Monto a cargar (CLP)' : 'Litros a cargar'}
+          </label>
+          <input
+            id="cant"
+            inputMode={params.modo === 'dinero' ? 'numeric' : 'decimal'}
+            placeholder="30 L por defecto"
+            value={params.cantidad}
+            onChange={(e) =>
+              set({
+                cantidad:
+                  params.modo === 'dinero'
+                    ? formatMiles(e.target.value)
+                    : e.target.value.replace(/[^\d.,]/g, ''),
+              })
+            }
+            aria-invalid={!cantidadOk}
+            className={`${campo} ${cantidadOk ? '' : 'border-red-500 focus:border-red-500 focus:ring-red-200'}`}
+          />
+          {!cantidadOk && (
+            <p role="alert" className="mt-1 text-sm text-red-600">
+              El monto mínimo de carga debe ser mayor o igual a $1.000 CLP o 1 Litro
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[10000, 20000].map((monto) => (
+            <button
+              key={monto}
+              type="button"
+              onClick={() => {
+                const base = params.modo === 'dinero' ? parseMiles(params.cantidad) || 0 : 0;
+                set({ modo: 'dinero', cantidad: formatMiles(String(base + monto)) });
+              }}
+              className="h-10 rounded-full bg-white px-4 text-sm font-semibold ring-1 ring-slate-300"
+            >
+              +${monto.toLocaleString('es-CL')}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => set({ modo: 'litros', cantidad: '40' })}
+            className="h-10 rounded-full bg-white px-4 text-sm font-semibold ring-1 ring-slate-300"
+          >
+            +Llenar estanque (40 L)
+          </button>
+        </div>
+      </Bloque>
+
+      {/* 4. Radio de búsqueda */}
+      <Bloque titulo="Radio de búsqueda" resumen={`${params.radioKm} km`} abierto={abiertos.radio} onToggle={() => toggle('radio')}>
+        <div className="flex items-center justify-between text-sm">
+          <label htmlFor="radio">Distancia máxima</label>
+          <strong>{params.radioKm} km</strong>
+        </div>
+        <input
+          id="radio"
+          type="range"
+          min="1"
+          max="20"
+          step="1"
+          value={params.radioKm}
+          onChange={(e) => set({ radioKm: Number(e.target.value) })}
+          className="h-8 w-full accent-blue-600"
+        />
+        <div className="flex justify-between text-xs text-slate-500">
+          <span>1 km</span>
+          <span>20 km</span>
+        </div>
+      </Bloque>
+
+      <button
+        type="button"
+        disabled={!puedeBuscar}
+        onClick={onBuscar}
+        className="h-14 w-full rounded-2xl bg-blue-600 text-lg font-bold text-white shadow disabled:bg-slate-300"
+      >
+        {buscando ? 'Buscando…' : 'Buscar mejor opción'}
+      </button>
+      {!origenListo && (
+        <p className="text-center text-sm text-slate-500">Define un origen en el mapa o en el buscador para continuar.</p>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="components/Resultados.js">
+'use client';
+
+import { formatCLP, formatKm } from '../lib/format';
+
+function Dato({ etiqueta, valor, destacado }) {
+  return (
+    <div>
+      <dt className="text-xs text-slate-500">{etiqueta}</dt>
+      <dd className={destacado ? 'text-lg font-bold' : 'font-semibold'}>{valor}</dd>
+    </div>
+  );
+}
+
+function TarjetaRecomendada({ e, litros, combustibleLabel, activa, errorRuta, cargandoRuta, onVerRuta }) {
+  return (
+    <article className="rounded-3xl border-2 border-green-500 bg-green-50 p-4 shadow-md">
+      <p className="text-xs font-bold uppercase tracking-wide text-green-700">★ Estación recomendada</p>
+      <h3 className="mt-1 text-xl font-bold">{e.marca || e.nombre}</h3>
+      <p className="text-sm text-slate-600">
+        {e.direccion}
+        {e.comuna ? `, ${e.comuna}` : ''}
+      </p>
+
+      <dl className="mt-3 grid grid-cols-2 gap-3">
+        <Dato etiqueta="Distancia desde el origen" valor={formatKm(e.distanciaKm)} />
+        <Dato etiqueta={`Precio ${combustibleLabel}`} valor={`${formatCLP(e.precioLitro)}/L`} />
+        <Dato etiqueta="Costo de traslado" valor={formatCLP(e.costoViaje)} />
+        <Dato etiqueta={`Carga (${litros.toFixed(1).replace('.', ',')} L)`} valor={formatCLP(e.costoCarga)} />
+        <Dato etiqueta="Costo total estimado" valor={formatCLP(e.costoTotal)} destacado />
+        <Dato
+          etiqueta="Ahorro vs. la más cercana"
+          valor={e.ahorroVsMasCercana > 0 ? formatCLP(e.ahorroVsMasCercana) : 'Es la más cercana'}
+          destacado
+        />
+      </dl>
+
+      <button
+        type="button"
+        onClick={() => onVerRuta(e)}
+        disabled={cargandoRuta}
+        className="mt-4 h-12 w-full rounded-xl bg-green-600 font-bold text-white disabled:opacity-60"
+      >
+        {cargandoRuta ? 'Calculando ruta…' : activa ? 'Mostrando ruta ✓' : 'Ver ruta'}
+      </button>
+      {errorRuta && (
+        <p role="alert" className="mt-2 text-sm font-medium text-red-600">
+          {errorRuta}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function TarjetaAlterna({ e, indice, seleccionada, onSeleccionar, onVerRuta, cargandoRuta }) {
+  return (
+    <article
+      className={`rounded-2xl border bg-white p-3 ${seleccionada ? 'border-amber-500 ring-2 ring-amber-200' : 'border-slate-200'}`}
+    >
+      <button type="button" onClick={() => onSeleccionar(e.id)} className="block w-full text-left">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-semibold">
+              {indice}. {e.marca || e.nombre}
+            </p>
+            <p className="truncate text-sm text-slate-500">{e.direccion}</p>
+          </div>
+          <p className="shrink-0 font-bold">{formatCLP(e.costoTotal)}</p>
+        </div>
+        <p className="mt-1 text-sm text-slate-600">
+          {formatKm(e.distanciaKm)} · {formatCLP(e.precioLitro)}/L · traslado {formatCLP(e.costoViaje)}
+        </p>
+      </button>
+      <button
+        type="button"
+        onClick={() => onVerRuta(e)}
+        disabled={cargandoRuta}
+        className="mt-2 h-10 w-full rounded-lg bg-slate-100 text-sm font-semibold disabled:opacity-60"
+      >
+        Ver ruta
+      </button>
+    </article>
+  );
+}
+
+export default function Resultados({
+  resultado,
+  seleccionadaId,
+  rutaDeId,
+  errorRuta,
+  cargandoRuta,
+  onSeleccionar,
+  onVerRuta,
+  onModificar,
+}) {
+  const { mejorOpcion, ranking, litros, combustibleLabel, radioKm, litrosDesdeDinero } = resultado;
+  const otras = ranking.filter((e) => e.id !== mejorOpcion.id);
+
+  return (
+    <div className="space-y-4 pb-2">
+      {/* Barra fija: visible también con el panel minimizado */}
+      <div className="sticky top-0 z-10 -mx-4 flex items-center justify-between gap-2 bg-white px-4 pb-2">
+        <h2 className="font-bold">Resultados</h2>
+        <button
+          type="button"
+          onClick={onModificar}
+          className="h-9 rounded-full bg-blue-600 px-4 text-sm font-semibold text-white"
+        >
+          ✎ Modificar búsqueda
+        </button>
+      </div>
+
+      {litrosDesdeDinero && (
+        <p className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-600">
+          Tu monto equivale a ~{litros.toFixed(1).replace('.', ',')} L, según el precio promedio de las estaciones del radio.
+        </p>
+      )}
+
+      <TarjetaRecomendada
+        e={mejorOpcion}
+        litros={litros}
+        combustibleLabel={combustibleLabel}
+        activa={rutaDeId === mejorOpcion.id}
+        errorRuta={rutaDeId === mejorOpcion.id || !rutaDeId ? errorRuta : null}
+        cargandoRuta={cargandoRuta === mejorOpcion.id}
+        onVerRuta={onVerRuta}
+      />
+
+      {otras.length > 0 && (
+        <section>
+          <h3 className="mb-2 font-semibold">Otras estaciones en {radioKm} km</h3>
+          <div className="space-y-2">
+            {otras.map((e, i) => (
+              <TarjetaAlterna
+                key={e.id}
+                e={e}
+                indice={i + 2}
+                seleccionada={seleccionadaId === e.id}
+                cargandoRuta={Boolean(cargandoRuta)}
+                onSeleccionar={onSeleccionar}
+                onVerRuta={onVerRuta}
+              />
+            ))}
+          </div>
+          {errorRuta && rutaDeId && rutaDeId !== mejorOpcion.id && (
+            <p role="alert" className="mt-2 text-sm font-medium text-red-600">
+              {errorRuta}
+            </p>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="components/SearchBar.js">
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { buscarDirecciones, ubicacionDeSugerencia } from '../lib/api';
+
+// REQ-EP1-02: "Origen de búsqueda" con autocompletado desde 3 caracteres
+export default function SearchBar({ direccion, errorDireccion, onElegir, onErrorUbicacion, autoFocus }) {
+  const [texto, setTexto] = useState('');
+  const [sugerencias, setSugerencias] = useState([]);
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    // no pisar lo que el usuario está escribiendo en este momento
+    if (direccion && document.activeElement !== ref.current) setTexto(direccion);
+  }, [direccion]);
+
+  useEffect(() => {
+    if (autoFocus) ref.current?.focus();
+  }, [autoFocus]);
+
+  useEffect(() => {
+    if (!abierto || texto.trim().length < 3) {
+      setSugerencias([]);
+      return;
+    }
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        setSugerencias(await buscarDirecciones(texto.trim(), ctrl.signal));
+      } catch {
+        /* petición cancelada */
+      }
+    }, 250);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [texto, abierto]);
+
+  async function elegir(s) {
+    setTexto(s.texto);
+    setAbierto(false);
+    setSugerencias([]);
+    ref.current?.blur();
+    try {
+      const { lat, lng } = await ubicacionDeSugerencia(s.id);
+      onElegir(lat, lng, s.texto);
+    } catch {
+      onErrorUbicacion?.();
+    }
+  }
+
+  return (
+    <div className="pointer-events-auto relative">
+      <label htmlFor="origen" className="sr-only">
+        Origen de búsqueda
+      </label>
+      <div className="flex items-center rounded-xl bg-white px-3 shadow-lg ring-1 ring-slate-200">
+        <span aria-hidden className="mr-2 text-blue-600">
+          ⌖
+        </span>
+        <input
+          id="origen"
+          ref={ref}
+          value={texto}
+          onChange={(e) => {
+            setTexto(e.target.value);
+            setAbierto(true);
+          }}
+          onFocus={() => setAbierto(true)}
+          onKeyDown={(e) => {
+            // Enter elige la primera sugerencia
+            if (e.key === 'Enter' && sugerencias[0]) {
+              e.preventDefault();
+              elegir(sugerencias[0]);
+            }
+          }}
+          placeholder="Origen de búsqueda"
+          autoComplete="off"
+          className="h-12 w-full bg-transparent text-base outline-none"
+        />
+        {texto && (
+          <button
+            type="button"
+            aria-label="Borrar"
+            onClick={() => {
+              setTexto('');
+              setSugerencias([]);
+              ref.current?.focus();
+            }}
+            className="px-2 text-slate-400"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {abierto && sugerencias.length > 0 && (
+        <ul className="absolute left-0 right-0 z-10 mt-1 overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-slate-200">
+          {sugerencias.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                className="block w-full px-4 py-3 text-left text-sm hover:bg-slate-50"
+                onClick={() => elegir(s)}
+              >
+                {s.texto}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {errorDireccion && (
+        <p role="alert" className="mt-1 rounded-lg bg-white/95 px-3 py-2 text-sm font-medium text-red-600 shadow">
+          {errorDireccion}
+        </p>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="lib/api.js">
+import { API_URL, MAPBOX_TOKEN, NUNOA_BBOX, NUNOA_CENTER } from './config';
+
+async function pedir(path, opciones) {
+  let res;
+  try {
+    res = await fetch(`${API_URL}${path}`, opciones);
+  } catch {
+    throw new Error('FUENTE_NO_DISPONIBLE');
+  }
+  if (!res.ok) throw new Error('FUENTE_NO_DISPONIBLE');
+  return res.json();
+}
+
+// Estaciones del radio, usadas para estimar el precio promedio (RN-02)
+export function obtenerEstacionesCercanas({ lat, lng, radioKm, tipoCombustible }) {
+  const q = new URLSearchParams({ lat, lng, radioKm, tipoCombustible });
+  return pedir(`/api/combustibles/estaciones-cercanas?${q}`);
+}
+
+export function calcularMejorOpcion(body) {
+  return pedir('/api/combustibles/calcular', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// REQ-EP1-02: autocompletado de direcciones acotado a Ñuñoa (Mapbox Search Box).
+// Una sesión agrupa las sugerencias y la selección final.
+let sesionBusqueda = crypto.randomUUID();
+
+// Las direcciones ya traen el nombre dentro de full_address; los lugares no
+function textoSugerencia(s) {
+  const detalle = s.full_address || s.place_formatted || '';
+  return detalle.toLowerCase().startsWith(String(s.name).toLowerCase()) ? detalle : [s.name, detalle].filter(Boolean).join(', ');
+}
+
+export async function buscarDirecciones(texto, signal) {
+  if (!MAPBOX_TOKEN) return [];
+  const q = new URLSearchParams({
+    q: texto,
+    access_token: MAPBOX_TOKEN,
+    session_token: sesionBusqueda,
+    country: 'cl',
+    language: 'es',
+    limit: '5',
+    types: 'poi,address,street,neighborhood',
+    bbox: NUNOA_BBOX.join(','),
+    proximity: `${NUNOA_CENTER.lng},${NUNOA_CENTER.lat}`,
+  });
+  const res = await fetch(`https://api.mapbox.com/search/searchbox/v1/suggest?${q}`, { signal });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.suggestions || []).map((s) => ({
+    id: s.mapbox_id,
+    texto: textoSugerencia(s),
+  }));
+}
+
+// Al elegir una sugerencia se pide su ubicación exacta
+export async function ubicacionDeSugerencia(id) {
+  const q = new URLSearchParams({ access_token: MAPBOX_TOKEN, session_token: sesionBusqueda });
+  const res = await fetch(`https://api.mapbox.com/search/searchbox/v1/retrieve/${id}?${q}`);
+  sesionBusqueda = crypto.randomUUID();
+  if (!res.ok) throw new Error('UBICACION_NO_DISPONIBLE');
+  const data = await res.json();
+  const [lng, lat] = data.features?.[0]?.geometry?.coordinates || [];
+  if (lat === undefined) throw new Error('UBICACION_NO_DISPONIBLE');
+  return { lat, lng };
+}
+
+export async function direccionDesdeCoordenadas(lat, lng) {
+  if (!MAPBOX_TOKEN) return null;
+  try {
+    const q = new URLSearchParams({
+      access_token: MAPBOX_TOKEN,
+      language: 'es',
+      limit: '1',
+      types: 'address,poi,neighborhood',
+    });
+    const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?${q}`);
+    const data = await res.json();
+    return data.features?.[0]?.place_name || null;
+  } catch {
+    return null;
+  }
+}
+
+// REQ-EP3-03: trazado de la ruta con Mapbox Directions
+export async function obtenerRuta(origen, destino) {
+  const url =
+    `https://api.mapbox.com/directions/v5/mapbox/driving/${origen.lng},${origen.lat};${destino.lng},${destino.lat}` +
+    `?geometries=geojson&overview=full&access_token=${MAPBOX_TOKEN}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('RUTA_NO_DISPONIBLE');
+  const data = await res.json();
+  const ruta = data.routes?.[0];
+  if (!ruta) throw new Error('RUTA_NO_DISPONIBLE');
+  return { geometry: ruta.geometry, distanciaKm: ruta.distance / 1000 };
+}
+</file>
+
+<file path="lib/config.js">
+export const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '';
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+// RN-01: el MVP opera solo dentro de Ñuñoa (bbox aproximado: oeste, sur, este, norte)
+export const NUNOA_BBOX = [-70.635, -33.49, -70.53, -33.43];
+export const NUNOA_CENTER = { lat: -33.4569, lng: -70.5976 };
+
+export const DEFAULTS = {
+  rendimientoKmL: 10,
+  combustible: '95',
+  litros: 30,
+  radioKm: 5,
+};
+
+export const COMBUSTIBLES = [
+  { id: '93', apiId: 'gasolina 93', label: '93 Octanos' },
+  { id: '95', apiId: 'gasolina 95', label: '95 Octanos' },
+  { id: '97', apiId: 'gasolina 97', label: '97 Octanos' },
+  { id: 'diesel', apiId: 'diesel', label: 'Diésel' },
+];
+
+export function dentroDeCobertura(lat, lng) {
+  const [w, s, e, n] = NUNOA_BBOX;
+  return lng >= w && lng <= e && lat >= s && lat <= n;
+}
+</file>
+
+<file path="lib/format.js">
+// RN-05: distancias en km, rendimiento en km/L, volumen en litros, dinero en CLP
+const clp = new Intl.NumberFormat('es-CL', {
+  style: 'currency',
+  currency: 'CLP',
+  maximumFractionDigits: 0,
+});
+
+export function formatCLP(valor) {
+  if (valor === null || valor === undefined || isNaN(valor)) return 'No disponible';
+  return clp.format(Math.round(valor));
+}
+
+export function formatKm(valor) {
+  if (valor === null || valor === undefined || isNaN(valor)) return 'No disponible';
+  return `${Number(valor).toFixed(2).replace('.', ',')} km`;
+}
+
+export function formatMiles(texto) {
+  const digitos = String(texto).replace(/\D/g, '');
+  if (!digitos) return '';
+  return Number(digitos).toLocaleString('es-CL');
+}
+
+export function parseMiles(texto) {
+  return Number(String(texto).replace(/\./g, '').replace(',', '.'));
+}
+</file>
+
+<file path="lib/vehiculos.js">
+// Catálogo de ejemplo para el MVP: rendimiento mixto aproximado en km/L.
+export const VEHICULOS = {
+  Toyota: {
+    Yaris: { 2018: 13.5, 2019: 13.5, 2020: 12.5, 2021: 12.5, 2022: 13 },
+    Corolla: { 2018: 12, 2020: 12, 2022: 12.5 },
+    Hilux: { 2018: 9, 2020: 9, 2022: 9.5 },
+  },
+  Chevrolet: {
+    Sail: { 2018: 14, 2019: 14, 2020: 14 },
+    Spark: { 2018: 15, 2020: 15, 2021: 15 },
+    Tracker: { 2020: 11.5, 2022: 11.5 },
+  },
+  Hyundai: {
+    Accent: { 2018: 14, 2020: 14, 2022: 14.5 },
+    Tucson: { 2018: 10.5, 2020: 10.5, 2022: 11 },
+  },
+  Kia: {
+    Morning: { 2018: 16, 2020: 16, 2022: 16 },
+    Rio: { 2018: 14.5, 2020: 14.5, 2022: 15 },
+    Sportage: { 2020: 10.5, 2022: 11 },
+  },
+  Suzuki: {
+    Swift: { 2018: 15, 2020: 15, 2022: 15.5 },
+    Baleno: { 2018: 14.5, 2020: 14.5 },
+  },
+};
+
+export function rendimientoDe(marca, modelo, anio) {
+  return VEHICULOS[marca]?.[modelo]?.[anio] ?? null;
+}
+</file>
+
+<file path=".env.local.example">
+NEXT_PUBLIC_MAPBOX_TOKEN=pk.tu_token_de_mapbox
+NEXT_PUBLIC_API_URL=http://localhost:4000
+</file>
+
+<file path=".gitignore">
+node_modules
+.next
+.env.local
+</file>
+
+<file path="package.json">
+{
+  "name": "benciruta-front",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "mapbox-gl": "^3.33.0",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^4.3.3"
+  }
+}
+</file>
+
+<file path="postcss.config.mjs">
+const config = {
+  plugins: {
+    '@tailwindcss/postcss': {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="README.md">
+# BenciRuta – Frontend
+
+Aplicación web *mobile-first* que ayuda a elegir la bencinera más conveniente en **Ñuñoa**. Muestra un mapa a pantalla completa y, en un panel inferior, deja ingresar los datos del vehículo, el combustible y la carga. Luego recomienda la estación con menor **costo total** (combustible + traslado) y traza la ruta hasta ella.
+
+Los datos de estaciones y los costos los entrega el backend ([benciruta-backend](https://github.com/YCardoen/benciruta-backend)).
+
+## Stack
+
+- [Next.js](https://nextjs.org) (App Router) + React, en JavaScript
+- [Tailwind CSS](https://tailwindcss.com) para los estilos
+- [Mapbox GL JS](https://docs.mapbox.com/mapbox-gl-js/) para el mapa
+- API del navegador para la geolocalización
+
+## Requisitos
+
+- Node.js compatible con tu versión de Next.js (20.9 o superior)
+- El **backend corriendo** (por defecto en `http://localhost:4000`)
+- Un **token público de Mapbox** (`pk...`) de https://account.mapbox.com
+
+## Instalación y ejecución
+
+```bash
+npm install
+cp .env.local.example .env.local     # en Windows: Copy-Item .env.local.example .env.local
+# edita .env.local y pega tu token de Mapbox
+npm run dev
+```
+
+Abre http://localhost:3000. Si cambias `.env.local`, reinicia `npm run dev`.
+
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | Servidor de desarrollo con recarga automática |
+| `npm run build` | Compila para producción |
+| `npm start` | Sirve la versión compilada |
+
+### Variables de entorno
+
+| Variable | Descripción |
+|---|---|
+| `NEXT_PUBLIC_MAPBOX_TOKEN` | Token público de Mapbox. Sin él el mapa no carga y se muestra un aviso. |
+| `NEXT_PUBLIC_API_URL` | Dirección del backend. Por defecto `http://localhost:4000`. |
+
+Las variables `NEXT_PUBLIC_*` quedan visibles en el navegador. Usa solo un token **público** de Mapbox y no pongas aquí claves privadas. `.env.local` está en `.gitignore`.
+
+## Cómo se usa
+
+1. Al cargar, la app pide tu ubicación. Si no se concede, aparece una alerta para ingresar una dirección o elegir un punto en el mapa.
+2. Define el **origen**: escribe una dirección en la barra superior (elige una sugerencia o presiona Enter), toca el mapa, arrastra el punto azul o usa el botón ◎.
+3. En el panel inferior ajusta los cuatro bloques:
+   - **Datos del vehículo:** marca, modelo, año y rendimiento (1 a 50 km/l; 10 por defecto).
+   - **Tipo de combustible:** 93, 95 (por defecto), 97 o diésel.
+   - **Volumen de carga:** monto en pesos o litros (30 L por defecto), con botones rápidos.
+   - **Radio de búsqueda:** de 1 a 20 km (5 por defecto). Se dibuja como un círculo azul en el mapa.
+4. Presiona **Buscar mejor opción**.
+5. Aparece la **estación recomendada** y las demás ordenadas por costo total. **Ver ruta** dibuja el camino en el mapa y baja el panel.
+6. **Modificar búsqueda** (arriba del panel) vuelve al formulario con tus valores. **Volver a resultados** regresa a la lista sin buscar de nuevo.
+
+El panel tiene 3 estados (minimizado, medio y expandido): se arrastra o se toca la barra gris de su borde superior.
+
+## Cómo se conecta
+
+### Con el backend
+
+| Acción | Endpoint | Qué se usa |
+|---|---|---|
+| Buscar mejor opción | `GET /api/combustibles/estaciones-cercanas` | Posición, marca, comuna y precio de las estaciones; precio promedio |
+| Buscar mejor opción | `POST /api/combustibles/calcular` | Costos de carga y traslado, total, ahorro y orden del ranking |
+
+Cada búsqueda hace ambas llamadas. `/calcular` no devuelve coordenadas, así que el front las toma de `/estaciones-cercanas` cruzando por `id`.
+
+### Con servicios externos
+
+| Servicio | Uso |
+|---|---|
+| Mapbox GL | Mapa, marcadores y círculo de radio |
+| Mapbox Search Box | Autocompletado de direcciones y su ubicación exacta |
+| Mapbox Geocoding | Dirección de un punto tocado en el mapa |
+| Mapbox Directions | Línea de la ruta en "Ver ruta" |
+| Geolocalización del navegador | Ubicación inicial y botón ◎ |
+
+
+## Estructura
+
+```
+app/
+├── layout.js              # Estructura HTML, título y viewport
+├── page.js                # Pantalla única: estado y flujo de la aplicación
+└── globals.css            # Tailwind y estilos base
+components/
+├── MapView.js             # Mapa: origen, radio, estaciones y ruta
+├── SearchBar.js           # Barra de dirección con autocompletado
+├── BottomSheet.js         # Panel deslizable de 3 estados
+├── ParamsPanel.js         # Formulario de parámetros (4 bloques)
+├── Resultados.js          # Recomendación y lista de alternativas
+└── Modal.js               # Alertas emergentes
+lib/
+├── api.js                 # Llamadas al backend y a Mapbox
+├── config.js              # Constantes: cobertura, valores por defecto, combustibles
+├── format.js              # Formato de pesos, kilómetros y miles
+└── vehiculos.js           # Catálogo de vehículos (de ejemplo)
+```
+
+## Datos de ejemplo (no reales)
+
+`lib/vehiculos.js` es un catálogo de pocas marcas con rendimientos **aproximados** puestos a mano. No viene de ninguna fuente oficial. También están escritos en el código la lista de combustibles y el límite de Ñuñoa.
+</file>
+
+</files>

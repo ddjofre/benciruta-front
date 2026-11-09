@@ -11,7 +11,7 @@ function Dato({ etiqueta, valor, destacado }) {
   );
 }
 
-function TarjetaRecomendada({ e, litros, combustibleLabel, activa, errorRuta, cargandoRuta, onVerRuta }) {
+function TarjetaRecomendada({ e, litros, combustibleLabel, tieneDestino, activa, errorRuta, cargandoRuta, onVerRuta }) {
   return (
     <article className="rounded-3xl border-2 border-green-500 bg-green-50 p-4 shadow-md">
       <p className="text-xs font-bold uppercase tracking-wide text-green-700">★ Estación recomendada</p>
@@ -22,9 +22,12 @@ function TarjetaRecomendada({ e, litros, combustibleLabel, activa, errorRuta, ca
       </p>
 
       <dl className="mt-3 grid grid-cols-2 gap-3">
-        <Dato etiqueta="Distancia desde el origen" valor={formatKm(e.distanciaKm)} />
+        <Dato etiqueta="Distancia desde origen" valor={formatKm(e.distanciaKm)} />
         <Dato etiqueta={`Precio ${combustibleLabel}`} valor={`${formatCLP(e.precioLitro)}/L`} />
-        <Dato etiqueta="Costo de traslado" valor={formatCLP(e.costoViaje)} />
+        <Dato
+          etiqueta={tieneDestino ? 'Costo del desvío extra' : 'Costo de traslado (ida y vuelta)'}
+          valor={formatCLP(e.costoViaje)}
+        />
         <Dato etiqueta={`Carga (${litros.toFixed(1).replace('.', ',')} L)`} valor={formatCLP(e.costoCarga)} />
         <Dato etiqueta="Costo total estimado" valor={formatCLP(e.costoTotal)} destacado />
         <Dato
@@ -51,10 +54,12 @@ function TarjetaRecomendada({ e, litros, combustibleLabel, activa, errorRuta, ca
   );
 }
 
-function TarjetaAlterna({ e, indice, seleccionada, onSeleccionar, onVerRuta, cargandoRuta }) {
+function TarjetaAlterna({ e, indice, tieneDestino, seleccionada, onSeleccionar, onVerRuta, cargandoRuta }) {
   return (
     <article
-      className={`rounded-2xl border bg-white p-3 ${seleccionada ? 'border-amber-500 ring-2 ring-amber-200' : 'border-slate-200'}`}
+      className={`rounded-2xl border bg-white p-3 ${
+        seleccionada ? 'border-amber-500 ring-2 ring-amber-200' : 'border-slate-200'
+      }`}
     >
       <button type="button" onClick={() => onSeleccionar(e.id)} className="block w-full text-left">
         <div className="flex items-start justify-between gap-3">
@@ -67,7 +72,8 @@ function TarjetaAlterna({ e, indice, seleccionada, onSeleccionar, onVerRuta, car
           <p className="shrink-0 font-bold">{formatCLP(e.costoTotal)}</p>
         </div>
         <p className="mt-1 text-sm text-slate-600">
-          {formatKm(e.distanciaKm)} · {formatCLP(e.precioLitro)}/L · traslado {formatCLP(e.costoViaje)}
+          {formatKm(e.distanciaKm)} · {formatCLP(e.precioLitro)}/L · {tieneDestino ? 'desvío ' : 'traslado '}
+          {formatCLP(e.costoViaje)}
         </p>
       </button>
       <button
@@ -92,12 +98,11 @@ export default function Resultados({
   onVerRuta,
   onModificar,
 }) {
-  const { mejorOpcion, ranking, litros, combustibleLabel, radioKm, litrosDesdeDinero } = resultado;
+  const { mejorOpcion, ranking, litros, combustibleLabel, radioKm, litrosDesdeDinero, tieneDestino } = resultado;
   const otras = ranking.filter((e) => e.id !== mejorOpcion.id);
 
   return (
     <div className="space-y-4 pb-2">
-      {/* Barra fija: visible también con el panel minimizado */}
       <div className="sticky top-0 z-10 -mx-4 flex items-center justify-between gap-2 bg-white px-4 pb-2">
         <h2 className="font-bold">Resultados</h2>
         <button
@@ -109,6 +114,12 @@ export default function Resultados({
         </button>
       </div>
 
+      {tieneDestino && (
+        <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700">
+          📍 Costo de traslado calculado exclusivamente con el <strong>desvío extra</strong> hacia tu destino.
+        </p>
+      )}
+
       {litrosDesdeDinero && (
         <p className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-600">
           Tu monto equivale a ~{litros.toFixed(1).replace('.', ',')} L, según el precio promedio de las estaciones del radio.
@@ -119,6 +130,7 @@ export default function Resultados({
         e={mejorOpcion}
         litros={litros}
         combustibleLabel={combustibleLabel}
+        tieneDestino={tieneDestino}
         activa={rutaDeId === mejorOpcion.id}
         errorRuta={rutaDeId === mejorOpcion.id || !rutaDeId ? errorRuta : null}
         cargandoRuta={cargandoRuta === mejorOpcion.id}
@@ -134,6 +146,7 @@ export default function Resultados({
                 key={e.id}
                 e={e}
                 indice={i + 2}
+                tieneDestino={tieneDestino}
                 seleccionada={seleccionadaId === e.id}
                 cargandoRuta={Boolean(cargandoRuta)}
                 onSeleccionar={onSeleccionar}

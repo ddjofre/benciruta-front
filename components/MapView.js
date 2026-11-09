@@ -5,7 +5,6 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { MAPBOX_TOKEN, NUNOA_CENTER } from '../lib/config';
 
-// Círculo geodésico aproximado como polígono GeoJSON (radio en km)
 function circulo(lat, lng, radioKm, pasos = 64) {
   const coords = [];
   const dLat = radioKm / 111.32;
@@ -34,6 +33,7 @@ function crearPin(color, texto) {
 
 export default function MapView({
   origen,
+  destino,
   radioKm,
   estaciones,
   recomendadaId,
@@ -47,6 +47,7 @@ export default function MapView({
   const mapa = useRef(null);
   const listo = useRef(false);
   const marcadorOrigen = useRef(null);
+  const marcadorDestino = useRef(null);
   const marcadoresEstaciones = useRef([]);
   const cbOrigen = useRef(onElegirOrigen);
   const cbEstacion = useRef(onSeleccionarEstacion);
@@ -55,7 +56,6 @@ export default function MapView({
   cbOrigen.current = onElegirOrigen;
   cbEstacion.current = onSeleccionarEstacion;
 
-  // Inicialización única del mapa
   useEffect(() => {
     if (!MAPBOX_TOKEN || mapa.current) return;
     mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -102,23 +102,20 @@ export default function MapView({
       m.fire('benci-listo');
     });
 
-    // REQ-EP1-02: tap sobre el mapa fija el origen
     m.on('click', (e) => cbOrigen.current?.(e.lngLat.lat, e.lngLat.lng));
 
     mapa.current = m;
     return () => {
-      // los marcadores pertenecen al mapa que se destruye: se descartan para recrearlos en el nuevo
       marcadorOrigen.current?.remove();
-      marcadorOrigen.current = null;
+      marcadorDestino.current?.remove();
       marcadoresEstaciones.current.forEach((x) => x.remove());
-      marcadoresEstaciones.current = [];
       m.remove();
       mapa.current = null;
       listo.current = false;
     };
   }, []);
 
-  // Marcador de origen (arrastrable) + círculo de radio
+  // Marcador de origen
   useEffect(() => {
     const m = mapa.current;
     if (!m || !origen) return;
@@ -145,7 +142,42 @@ export default function MapView({
     else m.once('benci-listo', aplicar);
   }, [origen, radioKm]);
 
-  // Recentrado suave cuando cambia el origen
+  // Marcador de destino final (Rojo / Bandera)
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m) return;
+
+    if (!destino?.lat || !destino?.lng) {
+      marcadorDestino.current?.remove();
+      marcadorDestino.current = null;
+      return;
+    }
+
+    const aplicar = () => {
+      if (!marcadorDestino.current) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width:24px;height:24px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+          background:#dc2626;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4);
+          display:flex;align-items:center;justify-content:center;`;
+        const t = document.createElement('span');
+        t.textContent = '🏁';
+        t.style.cssText = 'transform:rotate(45deg);font-size:11px;';
+        el.appendChild(t);
+
+        marcadorDestino.current = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat([destino.lng, destino.lat])
+          .addTo(m);
+      } else {
+        marcadorDestino.current.setLngLat([destino.lng, destino.lat]);
+      }
+    };
+
+    if (listo.current) aplicar();
+    else m.once('benci-listo', aplicar);
+  }, [destino]);
+
+  // Centrado suave al cambiar origen
   useEffect(() => {
     const m = mapa.current;
     if (!m || !origen) return;
@@ -154,7 +186,7 @@ export default function MapView({
       duration: 800,
       padding: { top: 90, bottom: bottomInset || 0, left: 0, right: 0 },
     });
-  }, [origen?.lat, origen?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [origen?.lat, origen?.lng]);
 
   // Marcadores de estaciones
   useEffect(() => {
@@ -176,7 +208,7 @@ export default function MapView({
     });
   }, [estaciones, recomendadaId, seleccionadaId]);
 
-  // Ruta hacia la estación elegida
+  // Ruta completa proyectada en el mapa
   useEffect(() => {
     const m = mapa.current;
     if (!m) return;
@@ -185,13 +217,19 @@ export default function MapView({
       if (ruta && origen) {
         const b = new mapboxgl.LngLatBounds();
         ruta.geometry.coordinates.forEach((c) => b.extend(c));
-        b.extend([origen.lng, origen.lat]); // el origen puede quedar fuera del trazo (se ajusta a la calle)
-        m.fitBounds(b, { padding: { top: 100, bottom: (bottomInset || 0) + 30, left: 40, right: 40 }, duration: 900 });
+        b.extend([origen.lng, origen.lat]);
+        if (destino?.lat && destino?.lng) {
+          b.extend([destino.lng, destino.lat]);
+        }
+        m.fitBounds(b, {
+          padding: { top: 100, bottom: (bottomInset || 0) + 30, left: 40, right: 40 },
+          duration: 900,
+        });
       }
     };
     if (listo.current) aplicar();
     else m.once('benci-listo', aplicar);
-  }, [ruta]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ruta]);
 
   if (sinToken) {
     return (
@@ -199,15 +237,13 @@ export default function MapView({
         <div className="max-w-sm rounded-xl bg-white p-5 shadow">
           <p className="font-semibold">Falta el token de Mapbox</p>
           <p className="mt-2 text-sm text-slate-600">
-            Crea el archivo <code>.env.local</code> en <code>benciruta-front</code> con{' '}
-            <code>NEXT_PUBLIC_MAPBOX_TOKEN=pk...</code> y reinicia <code>npm run dev</code>.
+            Crea el archivo <code>.env.local</code> con <code>NEXT_PUBLIC_MAPBOX_TOKEN=pk...</code>
           </p>
         </div>
       </div>
     );
   }
 
-  // Mapbox fuerza position:relative en su contenedor, por eso va dentro de un envoltorio absoluto
   return (
     <div className="absolute inset-0">
       <div ref={contenedor} className="h-full w-full" />
